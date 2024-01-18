@@ -22,7 +22,7 @@ try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     from tensorboard import SummaryWriter
-
+from peft import get_peft_model, LoraConfig, TaskType
 
 def set_random_seed(seed):
     if seed is not None:
@@ -315,7 +315,7 @@ def main():
 
     args.global_rank = torch.distributed.get_rank()
 
-    ds_config = {"train_micro_batch_size_per_gpu": args.per_device_train_batch_size,
+    ds_config = {"train_micro_batch_size_per_gpu": args.per_device_train_batch_size / args.gradient_accumulation_steps,
                  "gradient_accumulation_steps": args.gradient_accumulation_steps,
                  "optimizer": {
                      "type": "Adam",
@@ -334,10 +334,10 @@ def main():
                  },
                  "zero_optimization": {
                      "stage": 1,
-                     "offload_optimizer": {
-                         "device": "cpu",
-                         "pin_memory": True
-                     },
+                    #  "offload_optimizer": {
+                    #      "device": "cpu",
+                    #      "pin_memory": True
+                    #  },
                      "allgather_partitions": True,
                      "allgather_bucket_size": 2e8,
                      "overlap_comm": True,
@@ -355,8 +355,13 @@ def main():
     print_rank_0(f"tokenizer special_tokens: {tokenizer.all_special_tokens}", args.global_rank)
 
     model = ChatGLMForConditionalGeneration.from_pretrained(args.model_name_or_path)
-    model.gradient_checkpointing_enable()
-    model_pipe = PipelineModule(layers=get_model(model), num_stages=args.num_stages)
+    # model.gradient_checkpointing_enable()
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=128, lora_alpha=64, lora_dropout=0.1
+    )
+    model_peft = get_peft_model(model, peft_config)
+    
+    model_pipe = PipelineModule(layers=get_model(model_peft.base_model.model), num_stages=args.num_stages)
     model_pipe.to(device).half()
 
     train_dataset = GLMPromptDataSet(args.train_path, tokenizer, args.max_len, args.max_src_len, args.is_skip)
